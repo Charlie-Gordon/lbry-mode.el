@@ -1,4 +1,4 @@
-;;; lbry.el --- Application for LBRY                 -*- lexical-binding: t; -*-
+;;; lbry-mode.el --- Application for LBRY                 -*- lexical-binding: t; -*-
 
 ;; This file is not part of GNU Emacs.
 
@@ -56,4 +56,3 @@
 	      (error "%s" (buffer-string))))
 	  (goto-char (point-min))
 	  (ignore-errors (json-read))))))
-;; "{\"method\":\"claim_search\",\"text\":\"luke\"}"
