@@ -28,6 +28,7 @@
 
 (require 'json)
 
+
 ;; User Variables
 (defgroup lbry nil
   "A LBRY application."
@@ -39,37 +40,15 @@
 ;;   "Search LBRY blockchain for `QUERY'"
 ;;   (interactive "sSearch terms: ")
   
-(defun lbry--jsonrpc-query-request (query)
-  (mapconcat
-   (lambda (key-vals)
-     (let ((escaped
-            (mapcar (lambda (sym)
-                      (format "%s" sym)) key-vals)))
-       (mapconcat (lambda (val)
-                    (let ((vprint (format "%s" val))
-                          (eprint (format "%s" (car escaped))))
-                      (concat eprint
-                              (if (or nil
-                                      (and val (not (zerop (length vprint)))))
-                                  ":"
-                                "")
-                              vprint)))
-                  (or (cdr escaped) '("")) (if nil ";" "&"))))
-   query ","))
   
-
-(defun ytel--query (string n)
-  "Query LBRY for STRING, return the Nth page of results."
-
-
 (defun lbry--API-call (method args)
   (with-temp-buffer
     (let ((exit-code (call-process "curl" nil (list (current-buffer) "/tmp/lbry-el-curl-error") nil
 				   "--show-error"
 				   "--silent"
 				   "--data"
-				   (concat "{" (lbry--jsonrpc-query-request '((\"method\" \"claim_search\")
-		    (\"text\" \"luke\"))) "}")
+				   (json-encode '((method . claim_search)
+						  (text . "luke")))
 					   lbry-api-url)))
 	  (unless (= exit-code 0)
 	    (with-temp-buffer
