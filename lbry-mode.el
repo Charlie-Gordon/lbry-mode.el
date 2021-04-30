@@ -25,22 +25,73 @@
 ;; To learn more please visit https://lbry.tech/
 
 ;;; Code:
-
 (require 'json)
 (require 'cl-lib)
-
+(require 'seq)
 ;;;; Types
 
 (cl-defstruct (lbry-entry (:constructor lbry-entry-create)
 			  (:copier nil))
   "Information about a LBRY video."
   (id "" :read-only t)
+  (lbry-url "" :read-only t)
   (release-time "" :read-only t)
   (file-date 0 :read-only t)
   (title     "" :read-only t)
+  (stream-type "" :read-only t)
   (media-type "" :read-only t)
   (desc "" :read-only t)
-  (channel    "" :read-only t))
+  (channel    "" :read-only t)
+  (tags [] :type vector :read-only t))
+
+;;;; Faces
+
+(defface lbry-channel
+  (if (featurep 'elfeed)
+      '((t :inherit elfeed-search-feed-face))
+    '((((class color) (background light)) (:foreground "#003497"))
+      (((class color) (background dark))  (:foreground "#92baff"))))
+  "Face used for channel name in *LBRY* buffer"
+  :group 'lbry)
+
+(defface lbry-date
+  (if (featurep 'elfeed)
+      '((t :inherit elfeed-search-date-face))
+    '((((class color) (background light)) (:foreground "#aaa"))
+      (((class color) (background dark))  (:foreground "#77a"))))
+  "Face used for date in *LBRY* buffer"
+  :group 'lbry)
+
+(defface lbry-tags
+  (if (featurep 'elfeed)
+      '((t :inherit elfeed-search-tag-face))
+    '((((class color) (background light)) (:foreground "#070"))
+      (((class color) (background dark))  (:foreground "#0f0"))))
+  "Face used for tags in *LBRY* buffer"
+  :group 'lbry)
+
+(defface lbry-video-title
+  (if (featurep 'elfeed)
+      '((t :inherit elfeed-search-unread title-face))
+    '((t :weight bold)))
+  "Face used for title of claims with \"video\" stream type"
+  :group 'lbry)
+
+(defface lbry-image-title
+  '((t :inherit outline-5))
+  "Face used for title of claims with \"image\" stream type"
+  :group 'lbry)
+
+(defface lbry-binary-title
+  '((t :inherit outline-3))
+  "Face used for title of claims with \"binary\" stream type"
+  :group 'lbry)
+
+(defface lbry-document-title
+  '((t :inherit outline-4))
+  "Face used for title of claims with \"document\" stream type"
+  :group 'lbry)
+
 
 ;;;; Variables
 
@@ -55,8 +106,8 @@
 (defvar-local lbry-search-term ""
   "Current search string as used by `lbry-search'")
 
-(defvar lbry-title-reserved-space 100
-  "Number of characters reserved for the video title in the *LBRY* buffer."
+(defvar lbry-title-reserved-space 65
+  "Number of characters reserved for the video title in the *LBRY* buffer.")
 
 (defvar lbry-mode-map
   (let ((map (make-sparse-keymap)))
@@ -126,32 +177,47 @@ to do an ascending order prepend ^ to the options"
       (erase-buffer)
       (insert (format "%S" claims)))
     ;; Above is for debugging
-    (dotimes (i 20)
+    (dotimes (i (assoc-recursive claims 'result 'page_size))
       (let* ((stream (aref (assoc-recursive claims 'result 'items) i)))
 	(aset (assoc-recursive claims 'result 'items) i
 	      (lbry-entry-create :id (assoc-recursive stream 'claim_id)
+				 :lbry-url (assoc-recursive 'canonical_url)
 				 :release-time (assoc-recursive stream 'value 'release_time)
 				 :file-date (assoc-recursive stream 'timestamp)
 				 :title (assoc-recursive stream 'value 'title)
+				 :stream-type (assoc-recursive stream 'value 'stream_type)
 				 :media-type (assoc-recursive stream 'value 'source 'media_type)
+				 ;; Sometimes claims was published from an anonymous source
 				 :channel (or (assoc-recursive stream 'signing_channel 'name)
 					      "Anonymous")
+				 :tags (assoc-recursive stream 'value 'tags)
 				 :desc (assoc-recursive stream 'value 'description)))))
     (assoc-recursive claims 'result 'items)))
 
-;;;;; *LBRY* Buffer
-(defun lbry ()
-  (interactive)
-  (switch-to-buffer (get-buffer-create "*LBRY*"))
-  (unless (eq major-mode 'lbry-mode)
-    (lbry-mode))
-  (when (seq-empty-p lbry-search-term)
-    (call-interactively #'lbry-search)))
+;;;;; Formatting *LBRY* Buffer
+
+(defun lbry--format-title (title &optional file-type)
+  "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
+  (let* ((n (string-width title))
+	 (extra-chars (- n lbry-title-reserved-space))
+	 (formatted-string (if (<= extra-chars 0)
+			       (concat title
+				       (make-string (abs extra-chars) ?\ )
+				       "   ")
+			     (concat (seq-subseq title 0 lbry-title-reserved-space)
+				     "..."))))
+    (pcase file-type
+      ((pred (string-match-p "binary.*")) (propertize formatted-string 'face 'lbry-binary-title))
+      ((pred (string-match-p "video.*")) (propertize formatted-string 'face 'lbry-video-title))
+      ((pred (string-match-p "image.*")) (propertize formatted-string 'face 'lbry-image-title))
+      ((pred (string-match-p "document.*")) (propertize formatted-string 'face 'lbry-document-title)))))
+
 
 (defun lbry--format-time (timestamp)
-  (format-time-string "%Y-%m-%d" (if (stringp timestamp)
+  (let ((formatted-date (format-time-string "%Y-%m-%d" (if (stringp timestamp)
 				     (string-to-number timestamp)
-				   timestamp)))
+				     timestamp))))
+    (propertize formatted-date 'face 'lbry-date)))
 
 (defun lbry--format-duration (seconds)
   "Format `SECONDS' to \"hh:mm:ss\""
@@ -160,22 +226,30 @@ to do an ascending order prepend ^ to the options"
 				  (format-seconds "%.2m" (mod seconds 3600))
 				  ":"
 				  (format-seconds "%.2s" (mod seconds 60)))))
-    formatted-string))
+    (propertize formatted-string 'face 'lbry-date)))
+
+(defun lbry--format-tags (array)
+  (propertize (mapconcat (lambda (tag) (format "%s" tag)) array ",") 'face 'lbry-tags))
+
+(defun lbry--format-channel (name)
+  "Propertize `NAME' for *LBRY* buffer"
+  (propertize name 'face 'lbry-channel))
 
 (defun lbry--insert-entry (claims)
   "Insert `CLAIMS' in the current buffer."
   (insert
    ;; Video type of claim has a special release_type key, use it instead of file date.
-   (if (string-match-p (lbry-entry-media-type claims) "video.*")
+   (if (string-match-p "video.*" (lbry-entry-media-type claims))
        (lbry--format-time (lbry-entry-release-time claims))
      (lbry--format-time (lbry-entry-file-date claims)))
    " "
-   (lbry-entry-title claims)
+   (lbry--format-title (lbry-entry-title claims) (lbry-entry-stream-type claims))
    " "
-   (lbry-entry-channel claims)
-   " "
-   (lbry-entry-media-type claims)))
-
+   (lbry--format-channel (lbry-entry-channel claims))
+   " ("
+   (lbry-entry-media-type claims)
+;;   (lbry--format-tags (lbry-entry-tags claims))
+   ")"))
 
 (defun lbry--draw-buffer ()
   (interactive)
@@ -192,6 +266,7 @@ to do an ascending order prepend ^ to the options"
 	      lbry-entry)
       (goto-char (point-min))))
 
+;;;;; *LBRY* buffer
 (defun lbry-search (query)
   "Search the LBRY network for `QUERY', and redraw the buffer."
   (interactive "sSearch terms: ")
@@ -200,14 +275,6 @@ to do an ascending order prepend ^ to the options"
   (setf lbry-entry (lbry--query query))
   (lbry--draw-buffer))
 
-
-;;;###autoload
-
-(define-derived-mode lbry-mode text-mode "LBRY"
-  (setq buffer-read-only t)
-  (buffer-disable-undo)
-  (make-local-variable 'lbry-entry))
-
 (defun lbry-quit ()
   (interactive)
   (quit-window))
@@ -215,6 +282,18 @@ to do an ascending order prepend ^ to the options"
 (defun lbry-get-current-claims ()
   (aref lbry-entry (1- (line-number-at-pos))))
 
+(define-derived-mode lbry-mode text-mode "LBRY"
+  (setq buffer-read-only t)
+  (buffer-disable-undo)
+  (make-local-variable 'lbry-entry))
 
+(defun lbry ()
+  (interactive)
+  (switch-to-buffer (get-buffer-create "*LBRY*"))
+  (unless (eq major-mode 'lbry-mode)
+    (lbry-mode))
+  (when (seq-empty-p lbry-search-term)
+    (call-interactively #'lbry-search)))
 
 (provide 'lbry-mode.el)
+;;; lbry-mode.el ends here
