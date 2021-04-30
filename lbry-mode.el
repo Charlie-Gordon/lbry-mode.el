@@ -29,10 +29,22 @@
 (require 'json)
 (require 'cl-lib)
 
-;; User Variables
-(defgroup lbry nil
-  "A LBRY application."
-  :group 'comm)
+;;;; Types
+
+(cl-defstruct (lbry-entry (:constructor lbry-entry-create)
+			  (:copier nil))
+  "Information about a LBRY video."
+  (id "" :read-only t)
+  (release-time "" :read-only t)
+  (file-date 0 :read-only t)
+  (title     "" :read-only t)
+  (media-type "" :read-only t)
+  (desc "" :read-only t)
+  (channel    "" :read-only t))
+
+;;;; Variables
+
+(defvar lbry-entry '(()))
 
 (defvar lbry-api-url "http://localhost:5279"
   "Url to LBRY api.")
@@ -43,7 +55,8 @@
 (defvar-local lbry-search-term ""
   "Current search string as used by `lbry-search'")
 
-(defvar lbry-entry '(()))
+(defvar lbry-title-reserved-space 100
+  "Number of characters reserved for the video title in the *LBRY* buffer."
 
 (defvar lbry-mode-map
   (let ((map (make-sparse-keymap)))
@@ -55,8 +68,13 @@
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
     (define-key map "RET" #'lbry-info)
-;;    (define-key map "TAB" #'lbry-more-info)
     map))
+
+;;;; Custom
+
+(defgroup lbry nil
+  "A LBRY application."
+  :group 'comm)
 
 (defcustom lbry-order-by 'name
   "Order to sort the results of the search query. Default is descending order
@@ -66,10 +84,69 @@ to do an ascending order prepend ^ to the options"
 		  support_amount trending_group trending_mixed trending_local
 		  trending_global activation_height)
   :group 'lbry)
+;;;; Functions
+;;;;; Format JSON from `lbry-sdk'
 
-(defun lbry-quit ()
+(defun lbry--API-call (method args)
+  (with-temp-buffer
+    (let ((exit-code (call-process "curl" nil (list (current-buffer) "/tmp/lbry-el-curl-error") nil
+				   "--show-error"
+				   "--silent"
+				   "--data"
+				   (json-encode `(("method" . ,method)
+						  ("params" . ,args)))
+				   lbry-api-url)))
+      ;; Put error code from cURL in "/tmp/lbry-el-curl-error" file
+      (unless (= exit-code 0)
+	(with-temp-buffer
+	  ;; Insert the error code in temporary buffer
+	  (insert-file "/tmp/lbry-el-curl-error")
+	  ;; Show the content of the buffer as an error
+	  ;; We go out of our to do this because cURL error code is very useful
+	  ;; e.g. wrong url or no protocol etc.
+	  (error "%s" (buffer-string))))
+      (goto-char (point-min))
+      (ignore-errors (json-read)))))
+
+;; Many thanks to @Malabarba for this fantastic solution
+;; https://emacs.stackexchange.com/questions/3197/best-way-to-retrieve-values-in-nested-assoc-lists
+(defun assoc-recursive (alist &rest keys)
+  "Recursively find KEYs in ALIST."
+  (while keys
+    (setq alist (cdr (assoc (pop keys) alist))))
+  alist)
+
+(defun lbry--query (string)
+  "Query the LBRY blockchain via `lbry-sdk' for STRING, return Nth page of resutls."
+  (let ((claims (lbry--API-call "claim_search" `(("text" . ,string)
+						 ("page" . ,lbry-current-page)
+						 ("claim_type" . "stream")))))
+    (with-current-buffer (get-buffer-create "ee")
+      (emacs-lisp-mode)
+      (erase-buffer)
+      (insert (format "%S" claims)))
+    ;; Above is for debugging
+    (dotimes (i 20)
+      (let* ((stream (aref (assoc-recursive claims 'result 'items) i)))
+	(aset (assoc-recursive claims 'result 'items) i
+	      (lbry-entry-create :id (assoc-recursive stream 'claim_id)
+				 :release-time (assoc-recursive stream 'value 'release_time)
+				 :file-date (assoc-recursive stream 'timestamp)
+				 :title (assoc-recursive stream 'value 'title)
+				 :media-type (assoc-recursive stream 'value 'source 'media_type)
+				 :channel (or (assoc-recursive stream 'signing_channel 'name)
+					      "Anonymous")
+				 :desc (assoc-recursive stream 'value 'description)))))
+    (assoc-recursive claims 'result 'items)))
+
+;;;;; *LBRY* Buffer
+(defun lbry ()
   (interactive)
-  (quit-window))
+  (switch-to-buffer (get-buffer-create "*LBRY*"))
+  (unless (eq major-mode 'lbry-mode)
+    (lbry-mode))
+  (when (seq-empty-p lbry-search-term)
+    (call-interactively #'lbry-search)))
 
 (defun lbry--format-time (timestamp)
   (format-time-string "%Y-%m-%d" (if (stringp timestamp)
@@ -77,6 +154,7 @@ to do an ascending order prepend ^ to the options"
 				   timestamp)))
 
 (defun lbry--format-duration (seconds)
+  "Format `SECONDS' to \"hh:mm:ss\""
   (let ((formatted-string (concat (format-seconds "%.2h" seconds)
 				  ":"
 				  (format-seconds "%.2m" (mod seconds 3600))
@@ -84,21 +162,20 @@ to do an ascending order prepend ^ to the options"
 				  (format-seconds "%.2s" (mod seconds 60)))))
     formatted-string))
 
-(defun lbry-get-current-claims ()
-  (aref lbry-entry (1- (line-number-at-pos))))
-
 (defun lbry--insert-entry (claims)
-  "Insert `VIDEO' in the current buffer."
-  (ignore-errors (insert
-		  (if (string-match-p (lbry-entry-media-type claims) "video.*")
-		      (lbry--format-time (lbry-entry-release-time claims))
-		    (lbry--format-time (lbry-entry-file-date claims)))
-		 " "
-		 (lbry-entry-title claims)
-		 " "
-		 (lbry-entry-channel claims)
-		 " "
-		 (lbry-entry-media-type claims))))
+  "Insert `CLAIMS' in the current buffer."
+  (insert
+   ;; Video type of claim has a special release_type key, use it instead of file date.
+   (if (string-match-p (lbry-entry-media-type claims) "video.*")
+       (lbry--format-time (lbry-entry-release-time claims))
+     (lbry--format-time (lbry-entry-file-date claims)))
+   " "
+   (lbry-entry-title claims)
+   " "
+   (lbry-entry-channel claims)
+   " "
+   (lbry-entry-media-type claims)))
+
 
 (defun lbry--draw-buffer ()
   (interactive)
@@ -123,27 +200,6 @@ to do an ascending order prepend ^ to the options"
   (setf lbry-entry (lbry--query query))
   (lbry--draw-buffer))
 
-(cl-defstruct (lbry-entry (:constructor lbry-entry-create)
-			  (:copier nil))
-  "Information about a LBRY video."
-  (id "PLACEHOLDER" :read-only t)
-  (release-time "PLACEHOLDER" :read-only t)
-  (file-date 0 :read-only t)
-  (title     "PLACEHOLDER" :read-only t)
-  (media-type "PLACEHOLDER" :read-only t)
-  (desc "PLACEHOLDER" :read-only t)
-  (channel    "PLACEHOLDER" :read-only t))
-
-;;  (duration    0  :read-only t))
-
-
-;; Many thanks to @Malabarba for this fantastic solution
-;; https://emacs.stackexchange.com/questions/3197/best-way-to-retrieve-values-in-nested-assoc-lists
-(defun assoc-recursive (alist &rest keys)
-  "Recursively find KEYs in ALIST."
-  (while keys
-    (setq alist (cdr (assoc (pop keys) alist))))
-  alist)
 
 ;;;###autoload
 
@@ -152,51 +208,13 @@ to do an ascending order prepend ^ to the options"
   (buffer-disable-undo)
   (make-local-variable 'lbry-entry))
 
-(defun lbry ()
+(defun lbry-quit ()
   (interactive)
-  (switch-to-buffer (get-buffer-create "*LBRY*"))
-  (unless (eq major-mode 'lbry-mode)
-    (lbry-mode))
-  (when (seq-empty-p lbry-search-term)
-    (call-interactively #'lbry-search)))
+  (quit-window))
 
-(defun lbry--API-call (method args)
-  (with-temp-buffer
-    (let ((exit-code (call-process "curl" nil (list (current-buffer) "/tmp/lbry-el-curl-error") nil
-				   "--show-error"
-				   "--silent"
-				   "--data"
-				   (json-encode `(("method" . ,method)
-						  ("params" . ,args)))
-				   lbry-api-url)))
-      (unless (= exit-code 0)
-	(with-temp-buffer
-	  (insert-file "/tmp/lbry-el-curl-error")
-	  (error "%s" (buffer-string))))
-      (goto-char (point-min))
-      (ignore-errors (json-read)))))
+(defun lbry-get-current-claims ()
+  (aref lbry-entry (1- (line-number-at-pos))))
 
-(defun lbry--query (string)
-  "Query the LBRY blockchain via `lbry-sdk' for STRING, return Nth page of resutls."
-  (let ((claims (lbry--API-call "claim_search" `(("text" . ,string)
-						 ("page" . ,lbry-current-page)
-;;						 ("order_by" ,lbry-order-by)
-						 ("claim_type" . "stream")))))
-    (with-current-buffer (get-buffer-create "ee")
-      (emacs-lisp-mode)
-      (erase-buffer)
-      (insert (format "%S" claims)))
-    (dotimes (i 20)
-      (let* ((stream (aref (assoc-recursive claims 'result 'items) i)))
-	(aset (assoc-recursive claims 'result 'items) i
-	      (lbry-entry-create :id (assoc-recursive stream 'claim_id)
-				 :release-time (assoc-recursive stream 'value 'release_time)
-				 :file-date (assoc-recursive stream 'timestamp)
-				 :title (assoc-recursive stream 'value 'title)
-				 :media-type (assoc-recursive stream 'value 'source 'media_type)
-				 :channel (or (assoc-recursive stream 'signing_channel 'name)
-					      "Anonymous")
-				 :desc (assoc-recursive stream 'value 'description)))))
-    (assoc-recursive claims 'result 'items)))
+
 
 (provide 'lbry-mode.el)
