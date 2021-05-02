@@ -40,8 +40,8 @@
   (title     "" :read-only t)
   (stream-type "" :read-only t)
   (media-type "" :read-only t)
-  (desc "" :read-only t)
   (channel    "" :read-only t)
+  (desc "" :read-only t)
   (tags [] :type vector :read-only t))
 
 ;;;; Faces
@@ -57,16 +57,16 @@
 (defface lbry-date
   (if (featurep 'elfeed)
       '((t :inherit elfeed-search-date-face))
-    '((((class color) (background light)) (:foreground "#aaa"))
-      (((class color) (background dark))  (:foreground "#77a"))))
+    '((((class color) (background light)) (:foreground "#00538b"))
+      (((class color) (background dark))  (:foreground "#00d3d0"))))
   "Face used for date in *LBRY* buffer"
   :group 'lbry)
 
 (defface lbry-tags
   (if (featurep 'elfeed)
       '((t :inherit elfeed-search-tag-face))
-    '((((class color) (background light)) (:foreground "#070"))
-      (((class color) (background dark))  (:foreground "#0f0"))))
+    '((((class color) (background light)) (:foreground "#005a5f"))
+      (((class color) (background dark))  (:foreground "#6ae4b9"))))
   "Face used for tags in *LBRY* buffer"
   :group 'lbry)
 
@@ -98,7 +98,10 @@
 (defvar lbry-entry '(()))
 
 (defvar lbry-api-url "http://localhost:5279"
-  "Url to LBRY api.")
+  "Url to a LBRY api.")
+
+(defvar lbry-instance-url "https://odysee.com"
+  "Url to a LBRY host instance")
 
 (defvar-local lbry-current-page 1
   "Current page of the current `lbry-search-term'")
@@ -118,7 +121,7 @@
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
-    (define-key map "RET" #'lbry-info)
+    (define-key map "RET" #'lbry--dwim)
     map))
 
 ;;;; Custom
@@ -136,6 +139,7 @@ to do an ascending order prepend ^ to the options"
 		  trending_global activation_height)
   :group 'lbry)
 ;;;; Functions
+
 ;;;;; Format JSON from `lbry-sdk'
 
 (defun lbry--API-call (method args)
@@ -155,7 +159,7 @@ to do an ascending order prepend ^ to the options"
 	  ;; Show the content of the buffer as an error
 	  ;; We go out of our to do this because cURL error code is very useful
 	  ;; e.g. wrong url or no protocol etc.
-	  (error "%s" (buffer-string))))
+	  (user-error "%s" (buffer-string))))
       (goto-char (point-min))
       (ignore-errors (json-read)))))
 
@@ -177,24 +181,27 @@ to do an ascending order prepend ^ to the options"
       (erase-buffer)
       (insert (format "%S" claims)))
     ;; Above is for debugging
-    (dotimes (i (assoc-recursive claims 'result 'page_size))
-      (let* ((stream (aref (assoc-recursive claims 'result 'items) i)))
-	(aset (assoc-recursive claims 'result 'items) i
-	      (lbry-entry-create :id (assoc-recursive stream 'claim_id)
-				 :lbry-url (assoc-recursive 'canonical_url)
-				 :release-time (assoc-recursive stream 'value 'release_time)
-				 :file-date (assoc-recursive stream 'timestamp)
-				 :title (assoc-recursive stream 'value 'title)
-				 :stream-type (assoc-recursive stream 'value 'stream_type)
-				 :media-type (assoc-recursive stream 'value 'source 'media_type)
-				 ;; Sometimes claims was published from an anonymous source
-				 :channel (or (assoc-recursive stream 'signing_channel 'name)
-					      "Anonymous")
-				 :tags (assoc-recursive stream 'value 'tags)
-				 :desc (assoc-recursive stream 'value 'description)))))
-    (assoc-recursive claims 'result 'items)))
-
-;;;;; Formatting *LBRY* Buffer
+    ;; Error handling
+    (if (assoc-recursive claims 'error)
+	(error "%s" (assoc-recursive claims 'error 'message))
+      ;; Assigning value to `lbry-entry' struct
+      (progn (dotimes (i (assoc-recursive claims 'result 'page_size))
+	       (let ((stream (aref (assoc-recursive claims 'result 'items) i)))
+		 (aset (assoc-recursive claims 'result 'items) i
+		       (lbry-entry-create :id (assoc-recursive stream 'claim_id)
+					  :lbry-url (assoc-recursive stream 'permanent_url)
+					  :release-time (assoc-recursive stream 'value 'release_time)
+					  :file-date (assoc-recursive stream 'timestamp)
+					  :title (assoc-recursive stream 'value 'title)
+					  :stream-type (assoc-recursive stream 'value 'stream_type)
+					  :media-type (assoc-recursive stream 'value 'source 'media_type)
+					  ;; Sometimes claims was published from an anonymous source
+					  :channel (or (assoc-recursive stream 'signing_channel 'name)
+						       "Anonymous")
+					  :tags (assoc-recursive stream 'value 'tags)
+					  :desc (assoc-recursive stream 'value 'description)))))
+	     (assoc-recursive claims 'result 'items)))))
+;;;;; Inserting *LBRY* Buffer
 
 (defun lbry--format-title (title &optional file-type)
   "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
@@ -228,8 +235,11 @@ to do an ascending order prepend ^ to the options"
 				  (format-seconds "%.2s" (mod seconds 60)))))
     (propertize formatted-string 'face 'lbry-date)))
 
-(defun lbry--format-tags (array)
-  (propertize (mapconcat (lambda (tag) (format "%s" tag)) array ",") 'face 'lbry-tags))
+(defun lbry--format-tags (tags)
+  (propertize 
+  (cond ((stringp tags) tags)
+	 ((arrayp tags) (mapconcat (lambda (element-in-array) (format "%s" element-in-array)) tags ",")))
+  'face 'lbry-tags))
 
 (defun lbry--format-channel (name)
   "Propertize `NAME' for *LBRY* buffer"
@@ -247,8 +257,7 @@ to do an ascending order prepend ^ to the options"
    " "
    (lbry--format-channel (lbry-entry-channel claims))
    " ("
-   (lbry-entry-media-type claims)
-;;   (lbry--format-tags (lbry-entry-tags claims))
+   (lbry--format-tags (lbry-entry-media-type claims))
    ")"))
 
 (defun lbry--draw-buffer ()
@@ -266,6 +275,36 @@ to do an ascending order prepend ^ to the options"
 	      lbry-entry)
       (goto-char (point-min))))
 
+;;;;; DWIM functions
+(defun lbry-application-function ()
+  (message "%s" "This claim is an application."))
+
+(defun lbry-audio-function (&rest args)
+  (start-process "lbry-play-audio" nil "mpv"
+		 "--no-video" args)
+  (message "Starting audio..."))
+
+(defun lbry-image-function ()
+  (start-process "lbry-view-image" nil "xdg-open"))
+
+(defun lbry-text-function ()
+  (start-process "lbry-view-text" nil "xdg-open"))
+
+(defun lbry-video-function (&optional url)
+  (start-process "lbry-play-video" nil "mpv" url))
+
+(defun lbry--dwim (&optional entry)
+  "Apply `lbry-*-function' depending on the media type of `ENTRY'"
+  (let* ((entry (or entry (lbry-get-current-claim)))
+	(instance-url (replace-regexp-in-string "lbry:/" lbry-instance-url (lbry-entry-lbry-url entry))))
+    (pcase (lbry-entry-media-type entry)
+      ((pred (string-match-p "application.*")) (lbry-application-function))
+      ((pred (string-match-p "audio.*")) (lbry-audio-function instance-url))
+      ((pred (string-match-p "image.*")) (lbry-image-function))
+      ((pred (string-match-p "text.*")) (lbry-text-function))
+      ((pred (string-match-p "video.*")) (lbry-video-function instance-url)))))
+
+;;;;; *LBRY-INFO* buffer
 ;;;;; *LBRY* buffer
 (defun lbry-search (query)
   "Search the LBRY network for `QUERY', and redraw the buffer."
@@ -278,13 +317,14 @@ to do an ascending order prepend ^ to the options"
 (defun lbry-quit ()
   (interactive)
   (quit-window))
-
-(defun lbry-get-current-claims ()
+  
+(defun lbry-get-current-claim ()
   (aref lbry-entry (1- (line-number-at-pos))))
 
 (define-derived-mode lbry-mode text-mode "LBRY"
   (setq buffer-read-only t)
   (buffer-disable-undo)
+  (hl-line-mode)
   (make-local-variable 'lbry-entry))
 
 (defun lbry ()
