@@ -12,4 +12,6 @@
 * Note
   A personal thank you(s) to [[https://grastello.github.io/][Gabriele Rastello]] and many contributors of the [[https://github.com/gRastello/ytel][ytel]] package as I just copy&paste'd
   most of their code and added my spaghetti on top without any permissions nor hesitation, thanks!
-  
+* Cool projects
+  Go check out [[https://git.sr.ht/~yoctocell/peertube][peertube.el]], also inspired by [[https://github.com/gRastello/ytel][ytel]].
+  And if you're curious about LBRY, you can read more about it  [[https://lbry.tech/][here]].
