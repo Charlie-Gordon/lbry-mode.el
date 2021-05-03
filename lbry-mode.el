@@ -81,7 +81,9 @@
   '((t :inherit outline-5))
   "Face used for title of claims with \"image\" stream type"
   :group 'lbry)
-
+(defface lbry-audio-title
+  '((t :inherit outline-7))
+  "Face used for title of claims with \"audio\" stream type")
 (defface lbry-binary-title
   '((t :inherit outline-3))
   "Face used for title of claims with \"binary\" stream type"
@@ -121,7 +123,7 @@
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
-    (define-key map "RET" #'lbry--dwim)
+    (define-key map (kbd "<return>") #'lbry--dwim)
     map))
 
 ;;;; Custom
@@ -175,11 +177,8 @@ to do an ascending order prepend ^ to the options"
   "Query the LBRY blockchain via `lbry-sdk' for STRING, return Nth page of resutls."
   (let ((claims (lbry--API-call "claim_search" `(("text" . ,string)
 						 ("page" . ,lbry-current-page)
-						 ("claim_type" . "stream")))))
-    (with-current-buffer (get-buffer-create "ee")
-      (emacs-lisp-mode)
-      (erase-buffer)
-      (insert (format "%S" claims)))
+						 ("claim_type" . "stream")
+						 ("fee_amount" . 0)))))
     ;; Above is for debugging
     ;; Error handling
     (if (assoc-recursive claims 'error)
@@ -216,9 +215,9 @@ to do an ascending order prepend ^ to the options"
     (pcase file-type
       ((pred (string-match-p "binary.*")) (propertize formatted-string 'face 'lbry-binary-title))
       ((pred (string-match-p "video.*")) (propertize formatted-string 'face 'lbry-video-title))
+      ((pred (string-match-p "audio.*")) (propertize formatted-string 'face 'lbry-audio-title))
       ((pred (string-match-p "image.*")) (propertize formatted-string 'face 'lbry-image-title))
       ((pred (string-match-p "document.*")) (propertize formatted-string 'face 'lbry-document-title)))))
-
 
 (defun lbry--format-time (timestamp)
   (let ((formatted-date (format-time-string "%Y-%m-%d" (if (stringp timestamp)
@@ -275,36 +274,76 @@ to do an ascending order prepend ^ to the options"
 	      lbry-entry)
       (goto-char (point-min))))
 
+;;;###autoload
 ;;;;; DWIM functions
-(defun lbry-application-function ()
-  (message "%s" "This claim is an application."))
-
-(defun lbry-audio-function (&rest args)
+(defun lbry-application-function (claim-url temp &optional open)
+  "Function to invoke when `lbry-entry-media-type' equal \"application\"
+The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
+the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open' when `OPEN' is non-nil."
+  ;;  Call LBRY with `get' method to download file
+  (let ((file-json (lbry--API-call "get" (if temp
+					      `(("uri" . ,claim-url)
+						 ("download_directory" . "/tmp/"))
+						`(("uri" . ,claim-url))))))
+    (message "%s%s%s%s" "Downloaded "
+	     (assoc-recursive file-json 'result 'file_name) " at "
+	     (assoc-recursive file-json 'result 'download_directory))
+    (when open
+      (start-process "lbry-application-open" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
+(defun lbry-audio-function (&optional url)
+  "Function to invoke when `lbry-entry-media-type' equal \"audio\"
+The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
+the claim is downloaded, open it with `mpv --no-video' when `OPEN' is non-nil."
   (start-process "lbry-play-audio" nil "mpv"
-		 "--no-video" args)
+		 "--no-video" url)
   (message "Starting audio..."))
 
-(defun lbry-image-function ()
-  (start-process "lbry-view-image" nil "xdg-open"))
+(defun lbry-image-function (claim-url temp &optional open)
+  "Function to invoke when `lbry-entry-media-type' equal \"image\"
+The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
+the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open' when `OPEN' is non-nil."
+  (let* ((file-json (lbry--API-call "get" (if temp
+					      `(("uri" . ,claim-url)
+						("download_directory" . "/tmp/"))
+					    `(("uri" . ,claim-url))))))
+    (message "%s" (concat "Downloaded "
+			  (assoc-recursive file-json 'result 'file_name) " at "
+			  (assoc-recursive file-json 'result 'download_directory)))
+    (when open
+      (start-process "lbry-view-image" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
 
-(defun lbry-text-function ()
-  (start-process "lbry-view-text" nil "xdg-open"))
+(defun lbry-text-function (claim-url temp)
+    "Function to invoke when `lbry-entry-media-type' equal \"text\"
+The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
+the claim is downloaded(to /tmp/ when `TEMP' is non-nil), call `find-file' to claim"
+  (let ((file-json (lbry--API-call "get" (if temp
+					      `(("uri" . ,claim-url)
+						("download_directory" . "/tmp/"))
+					    `(("uri" . ,claim-url))))))
+    (find-file (assoc-recursive file-json 'result 'download_path))))
 
-(defun lbry-video-function (&optional url)
-  (start-process "lbry-play-video" nil "mpv" url))
+(defun lbry-video-function (url)
+  "Function to invoke when `lbry-entry-media-type' equal \"video\"
+The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
+the claim is downloaded, open it with `mpv'"
+  (start-process "lbry-play-video" nil "mpv" url)
+  (message "%s%s" "Playing " url))
 
 (defun lbry--dwim (&optional entry)
   "Apply `lbry-*-function' depending on the media type of `ENTRY'"
+  (interactive)
   (let* ((entry (or entry (lbry-get-current-claim)))
-	(instance-url (replace-regexp-in-string "lbry:/" lbry-instance-url (lbry-entry-lbry-url entry))))
+	 (url (lbry-entry-lbry-url entry))
+	 (instance-url (replace-regexp-in-string "lbry:/" lbry-instance-url url)))
     (pcase (lbry-entry-media-type entry)
-      ((pred (string-match-p "application.*")) (lbry-application-function))
+      ((pred (string-match-p "application.*")) (lbry-application-function url t t))
       ((pred (string-match-p "audio.*")) (lbry-audio-function instance-url))
-      ((pred (string-match-p "image.*")) (lbry-image-function))
-      ((pred (string-match-p "text.*")) (lbry-text-function))
+      ((pred (string-match-p "image.*")) (lbry-image-function url t t))
+      ((pred (string-match-p "text.*")) (lbry-text-function url t))
       ((pred (string-match-p "video.*")) (lbry-video-function instance-url)))))
 
-;;;;; *LBRY-INFO* buffer
 ;;;;; *LBRY* buffer
 (defun lbry-search (query)
   "Search the LBRY network for `QUERY', and redraw the buffer."
