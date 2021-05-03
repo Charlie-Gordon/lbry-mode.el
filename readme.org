@@ -1,2 +1,15 @@
 #+TITLE: LBRY-mode
-
+* lbry-mode
+  Interact with [[https://github.com/lbryio/lbry-sdk][lbry-sdk]] via an Elfeed-like buffer in your favourite text-editor.
+* Dependencies
+  As of right now, ~lbry-mode~ relies on cURL and [[https://github.com/lbryio/lbry-sdk][lbry api]] server so make sure you have them installed.
+* Setup
+  Clone this repository, then add it to your ~load-path~
+* Extensibility
+  You can define new function for ~lbry--dwim~ function to behave according to your needs,
+  the function invoke other functions like ~lbry-video-function~ for an entry that has video media-type
+  or ~lbry-image-function~ for image media-type and other kinds of media.
+* Note
+  A personal thank you(s) to [[https://grastello.github.io/][Gabriele Rastello]] and many contributors of the [[https://github.com/gRastello/ytel][ytel]] package as I just copy&paste'd
+  most of their code and added my spaghetti on top without any permissions nor hesitation, thanks!
+  
