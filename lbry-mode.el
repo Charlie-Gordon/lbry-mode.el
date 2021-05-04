@@ -120,6 +120,8 @@
     (define-key map "q" #'lbry-quit)
     (define-key map "g" #'lbry--draw-buffer)
     (define-key map "h" #'desribe-mode)
+    (define-key map "f" #'lbry-next-page)
+    (define-key map "b" #'lbry-last-page)
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
@@ -173,10 +175,11 @@ to do an ascending order prepend ^ to the options"
     (setq alist (cdr (assoc (pop keys) alist))))
   alist)
 
-(defun lbry--query (string)
+(defun lbry--query (string &optional page)
   "Query the LBRY blockchain via `lbry-sdk' for STRING, return Nth page of resutls."
   (let ((claims (lbry--API-call "claim_search" `(("text" . ,string)
-						 ("page" . ,lbry-current-page)
+						 ("page" . ,(or page
+							       lbry-current-page))
 						 ("claim_type" . "stream")
 						 ("fee_amount" . 0)))))
     ;; Above is for debugging
@@ -291,6 +294,7 @@ the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open
     (when open
       (start-process "lbry-application-open" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
       (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
+      
 (defun lbry-audio-function (&optional url)
   "Function to invoke when `lbry-entry-media-type' equal \"audio\"
 The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
@@ -365,6 +369,21 @@ the claim is downloaded, open it with `mpv'"
   (buffer-disable-undo)
   (hl-line-mode)
   (make-local-variable 'lbry-entry))
+
+(defun lbry-next-page ()
+  "Switch to the next page of the current search. Redraw the buffer."
+  (interactive)
+  (setf lbry-entry (lbry--query lbry-search-term (1+ lbry-current-page)))
+  (setf lbry-current-page (1+ lbry-current-page))
+  (lbry--draw-buffer))
+
+(defun lbry-last-page ()
+  "Switch to the last page of the current search. Redraw the buffer."
+  (interactive)
+  (when (> lbry-current-page 1)
+    (setf lbry-entry (lbry--query lbry-search-term (1- lbry-current-page)))
+    (setf lbry-current-page (1- lbry-current-page))
+    (lbry--draw-buffer)))
 
 (defun lbry ()
   (interactive)
