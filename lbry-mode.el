@@ -292,7 +292,9 @@ the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open
 	     (assoc-recursive file-json 'result 'file_name) " at "
 	     (assoc-recursive file-json 'result 'download_directory))
     (when open
-      (start-process "lbry-application-open" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      ;;      (start-process "lbry-application-open" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      ;; I use Emacs to open pdf files with `pdf-tools' package.
+      (find-file (assoc-recursive file-json 'result 'download_path))
       (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
       
 (defun lbry-audio-function (&optional url)
@@ -315,7 +317,9 @@ the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open
 			  (assoc-recursive file-json 'result 'file_name) " at "
 			  (assoc-recursive file-json 'result 'download_directory)))
     (when open
-      (start-process "lbry-view-image" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      ;; (start-process "lbry-view-image" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
+      ;; I use Emacs
+      (find-file (assoc-recursive file-json 'result 'download_path))
       (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
 
 (defun lbry-text-function (claim-url temp)
@@ -349,27 +353,7 @@ the claim is downloaded, open it with `mpv'"
       ((pred (string-match-p "video.*")) (lbry-video-function instance-url)))))
 
 ;;;;; *LBRY* buffer
-(defun lbry-search (query)
-  "Search the LBRY network for `QUERY', and redraw the buffer."
-  (interactive "sSearch terms: ")
-  (setf lbry-current-page 1)
-  (setf lbry-search-term query)
-  (setf lbry-entry (lbry--query query))
-  (lbry--draw-buffer))
-
-(defun lbry-quit ()
-  (interactive)
-  (quit-window))
-  
-(defun lbry-get-current-claim ()
-  (aref lbry-entry (1- (line-number-at-pos))))
-
-(define-derived-mode lbry-mode text-mode "LBRY"
-  (setq buffer-read-only t)
-  (buffer-disable-undo)
-  (hl-line-mode)
-  (make-local-variable 'lbry-entry))
-
+;;;;;; Navigation functions
 (defun lbry-next-page ()
   "Switch to the next page of the current search. Redraw the buffer."
   (interactive)
@@ -384,6 +368,28 @@ the claim is downloaded, open it with `mpv'"
     (setf lbry-entry (lbry--query lbry-search-term (1- lbry-current-page)))
     (setf lbry-current-page (1- lbry-current-page))
     (lbry--draw-buffer)))
+
+(defun lbry-search (query) 
+  "Search the LBRY network for `QUERY', and redraw the buffer."
+  (interactive "sSearch term: ")
+  (setf lbry-search-term query)
+  (setf lbry-current-page 1)
+  (setf lbry-entry (lbry--query query))
+  (lbry--draw-buffer))
+
+(defun lbry-quit ()
+  (interactive)
+  (quit-window))
+  
+(defun lbry-get-current-claim ()
+  (aref lbry-entry (1- (line-number-at-pos))))
+
+(define-derived-mode lbry-mode text-mode "LBRY"
+  (setq buffer-read-only t
+	truncate-line t)
+  (buffer-disable-undo)
+  (hl-line-mode)
+  (make-local-variable 'lbry-entry))
 
 (defun lbry ()
   (interactive)
