@@ -417,8 +417,7 @@ the claim is downloaded, open it with `mpv'"
   (setq lbry-search-term lbry-search-message)
   (setq lbry-search-message "")
   (setf lbry-entry (lbry--query lbry-search-term))
-  (lbry--draw-buffer)
-  (message "%s" "done"))
+  (lbry--draw-buffer))
 
 ;;;;;; Building search message
 
