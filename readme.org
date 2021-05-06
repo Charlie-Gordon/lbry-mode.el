@@ -15,11 +15,10 @@
 * Cool projects
   Go check out [[https://git.sr.ht/~yoctocell/peertube][peertube.el]], also inspired by [[https://github.com/gRastello/ytel][ytel]].
   And if you're curious about LBRY, you can read more about it  [[https://lbry.tech/][here]].
-* Incoming feature
-  ** TODO More advanced search parameters.
-  ** TODO More documentation.
-  ** TODO Display Channel info in *LBRY-INFO* buffer.
-  ** TODO Double the amount of entries.
-  ** TODO Less dependencies on lbry-sdk.
-* Final Goal
-  ** TODO Integration with [[https://gitlab.com/Charlie-Gordon/parallel-mode.el][parallel-mode.el]] (if will it ever finish)
+* TODO Incoming feature
+  - [ ] More advanced search parameters.
+  - [ ] More documentation.
+  - [ ] Display Channel info in *LBRY-INFO* buffer.
+  - [ ] Double the amount of entries.
+* TODO Final Goal
+  Integration with [[https://gitlab.com/Charlie-Gordon/parallel-mode.el][parallel-mode.el]] (if will it ever finish)

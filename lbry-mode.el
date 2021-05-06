@@ -111,6 +111,12 @@
 (defvar-local lbry-search-term ""
   "Current search string as used by `lbry-search'")
 
+(defvar-local isearch-mode nil)
+
+(defvar lbry-search-message-prefix "Search terms: ")
+
+(defvar lbry-search-message "")
+
 (defvar lbry-title-reserved-space 65
   "Number of characters reserved for the video title in the *LBRY* buffer.")
 
@@ -125,8 +131,27 @@
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
-    (define-key map (kbd "<return>") #'lbry--dwim)
+    (define-key map [return] #'lbry--dwim)
     map))
+
+(defvar lbry-search-mode-map
+  (let ((i 0)
+	(map (make-keymap)))
+    ;; (or (char-table-p (nth 1 map))
+    ;; 	(error "The initialization of lbry-search-mode-map must be updated"))
+    ;; (set-char-table-range (nth 1 map) (cons #x100 (max-char))
+    ;; 			  'lbry-search-print-char)
+    (setq i ?\s)
+    (while (< i 256)
+      (define-key map (vector i) 'lbry-search-print-char)
+      (setq i (1+ i)))
+    (let ((meta-map (make-sparse-keymap)))
+      (define-key map (char-to-string meta-prefix-char) meta-map))
+    (define-key map "\177" 'lbry-search-delete-char)
+;;    (define-key map "\C-g" 'lbry-search-abort)
+    (define-key map [return] 'lbry-search-exit)
+    map)
+  "Keymap for `lbry-search-mode'.")
 
 ;;;; Custom
 
@@ -143,7 +168,6 @@ to do an ascending order prepend ^ to the options"
 		  trending_global activation_height)
   :group 'lbry)
 ;;;; Functions
-
 ;;;;; Format JSON from `lbry-sdk'
 
 (defun lbry--API-call (method args)
@@ -194,7 +218,8 @@ to do an ascending order prepend ^ to the options"
 					  :lbry-url (assoc-recursive stream 'permanent_url)
 					  :release-time (assoc-recursive stream 'value 'release_time)
 					  :file-date (assoc-recursive stream 'timestamp)
-					  :title (assoc-recursive stream 'value 'title)
+					  :title (or (assoc-recursive stream 'value 'title)
+						     "No title available.")
 					  :stream-type (assoc-recursive stream 'value 'stream_type)
 					  :media-type (assoc-recursive stream 'value 'source 'media_type)
 					  ;; Sometimes claims was published from an anonymous source
@@ -207,7 +232,7 @@ to do an ascending order prepend ^ to the options"
 
 (defun lbry--format-title (title &optional file-type)
   "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
-  (let* ((n (string-width title))
+  (let* ((n (length title))
 	 (extra-chars (- n lbry-title-reserved-space))
 	 (formatted-string (if (<= extra-chars 0)
 			       (concat title
@@ -271,8 +296,9 @@ to do an ascending order prepend ^ to the options"
 				     lbry-search-term
 				     ", page "
 				     (number-to-string lbry-current-page)))
-      (seq-do (lambda (v)
-		(lbry--insert-entry v)
+    (seq-do (lambda (v)
+	      (when (lbry-entry-stream-type v)
+		(lbry--insert-entry v))
 		(insert "\n"))
 	      lbry-entry)
       (goto-char (point-min))))
@@ -368,15 +394,82 @@ the claim is downloaded, open it with `mpv'"
     (setf lbry-entry (lbry--query lbry-search-term (1- lbry-current-page)))
     (setf lbry-current-page (1- lbry-current-page))
     (lbry--draw-buffer)))
+;;;;; lbry-search minor mode
 
-(defun lbry-search (query) 
-  "Search the LBRY network for `QUERY', and redraw the buffer."
-  (interactive "sSearch term: ")
-  (setf lbry-search-term query)
+(define-minor-mode lbry-search-mode
+  "Mode for searching in *LBRY* buffer."
+  :init-value nil
+  :lighter " Search"
+  :keymap 
+  (make-local-variable 'lbry-search-term)
+  (setq lbry-current-page 1)
+  (lbry-search-update))
+
+(defun lbry-search () 
+   (interactive)
+   (lbry-search-mode 1))
+
+(defun lbry-search-exit ()
+  (interactive)
+  (lbry-search-mode 0)
+  (force-mode-line-update)
   (setf lbry-current-page 1)
-  (setf lbry-entry (lbry--query query))
-  (lbry--draw-buffer))
+  (setq lbry-search-term lbry-search-message)
+  (setq lbry-search-message "")
+  (setf lbry-entry (lbry--query lbry-search-term))
+  (lbry--draw-buffer)
+  (message "%s" "done"))
 
+;;;;;; Building search message
+
+(defun lbry-search-prefix ()
+  (propertize lbry-search-message-prefix 'face 'minibuffer-prompt 'read-only 't))
+
+(defun lbry-search-update ()
+  (if (not (input-pending-p))
+      (funcall #'lbry-search-message)))
+
+(defun lbry-search-print-char (&optional char count)
+  (interactive (list last-command-event
+		     (prefix-numeric-value current-prefix-arg)))
+  (let ((char (or char last-command-event)))
+    (if (= char ?\S-\ )
+	(setq char ?\s))
+    (lbry-process-search-char char count)))
+
+(defun lbry-process-search-char (char &optional count)
+  (let* ((string (if (and (integerp count) (> count 1))
+		     (make-string count char)
+		   (char-to-string char)))
+	 (message (if (>= char ?\200)
+		      string
+		    (mapconcat 'char-to-string string ""))))
+    (lbry-process-search-string string message)))
+
+(defun lbry-process-search-string (string message)
+  (setq lbry-search-term (concat lbry-search-term string)
+	lbry-search-message (concat lbry-search-message message))
+  (lbry-search-update))
+
+(defun lbry-search-message ()
+  (let ((m lbry-search-message))
+    (when (string-match "@.* \\| @.*$" lbry-search-message)
+      (setq m (copy-sequence m))
+      (add-text-properties (match-beginning 0) (match-end 0) '(face lbry-channel) m))
+    (setq m (concat
+	     (lbry-search-prefix)
+	     m))
+    (let ((message-log-max nil))
+      (message "%s" m))))
+
+(defun lbry-search-delete-char ()
+  (interactive)
+  (if (seq-empty-p lbry-search-term)
+      (ding)
+    (setf lbry-search-message (substring lbry-search-message 0 (1- (length lbry-search-message)))))
+  (lbry-search-update))
+    
+;;;;; Other
 (defun lbry-quit ()
   (interactive)
   (quit-window))
@@ -397,7 +490,8 @@ the claim is downloaded, open it with `mpv'"
   (unless (eq major-mode 'lbry-mode)
     (lbry-mode))
   (when (seq-empty-p lbry-search-term)
-    (call-interactively #'lbry-search)))
+   (funcall #'lbry-search)))
 
 (provide 'lbry-mode.el)
+
 ;;; lbry-mode.el ends here
