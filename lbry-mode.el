@@ -164,8 +164,8 @@ no parameters) that returns a directory name."
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
-    (define-key map "s" #'lbry-download)
-    (define-key map [return] #'lbry--dwim)
+    (define-key map "d" #'lbry-download)
+    (define-key map [return] #'lbry-open)
     map))
 
 (defvar lbry-search-mode-map
@@ -376,14 +376,16 @@ the claim is downloaded, open it with `mpv'"
 (defun lbry-download (&optional entry tmp)
   "Apply `lbry-*-function' depending on the media type of `ENTRY'"
   (interactive)
-  (let ((entry (or entry (lbry-get-current-claim)))
-        (dir (if (stringp eww-download-directory)
-                 lbry-download-directory
-               (funcall lbry-download-directory)))
-        (file-json (lbry--API-call "get" (if temp
-					     `(("uri" . ,claim-url)
-					       ("download_directory" . "/tmp/"))
-					   `(("uri" . ,claim-url))))))
+  (let* ((entry (or entry (lbry-get-current-claim)))
+         (claim-url (lbry-entry-lbry-url entry))
+         (dir (if (stringp lbry-download-directory)
+                  lbry-download-directory
+                (funcall lbry-download-directory)))
+         (file-json (lbry--API-call "get" (list (cons "uri" claim-url)
+				                (cons "download_directory"
+                                                      (if tmp
+                                                          temporary-file-directory
+                                                        dir))))))
     (message "Downloaded %s at %s"
              (assoc-recursive file-json 'result 'file_name)
 	     (assoc-recursive file-json 'result 'download_directory))))
