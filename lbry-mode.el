@@ -1,4 +1,4 @@
-;;; lbry-mode.el --- Application for LBRY                 -*- lexical-binding: t; -*-
+;;; lbry-mode.el --- Application for LBRY  -*- lexical-binding: t; -*-
 
 ;; This file is not part of GNU Emacs.
 
@@ -20,8 +20,9 @@
 
 ;;; Commentary:
 
-;; This package provide a major mode to interact with the LBRY data network via Elfeed-like buffer.
-;; The LBRY data network includes videos, films, art, books, and many more.
+;; This package provide a major mode to interact with the LBRY data
+;; network via Elfeed-like buffer.  The LBRY data network includes
+;; videos, films, art, books, and many more.
 ;; To learn more please visit https://lbry.tech/
 
 ;;; Code:
@@ -95,9 +96,41 @@
   :group 'lbry)
 
 
-;;;; Variables
+;;;; Customizable variables
 
-(defvar lbry-entry '(()))
+(defgroup lbry nil
+  "A LBRY application."
+  :group 'comm
+  :link '(url-link "https://gitlab.com/c1-g/lbry-mode-el"))
+
+(defcustom lbry-order-by 'name
+  "Order to sort the results of the search query. Default is descending order
+to do an ascending order prepend ^ to the options"
+  :type 'symbol
+  :options '(choice (symbol :tag "Name" name)
+                    (symbol :tag "Height" height)
+                    (symbol :tag "Release_Time" release_time)
+                    (symbol :tag "Publish_Time" publish_time)
+                    (symbol :tag "Amount" amount)
+                    (symbol :tag "Effective_Amount" effective_amount)
+                    (symbol :tag "Support_Amount" support_amount)
+                    (symbol :tag "Trending_Group" trending_group)
+                    (symbol :tag "Trending_Mixed" trending_mixed)
+                    (symbol :tag "Treading_Local" trending_local)
+                    (symbol :tag "Trending_Global" trending_global)
+                    (symbol :tag "Activation_Height" activation_height))
+  :group 'lbry)
+
+(defcustom lbry-download-directory 'erc--download-directory
+  "Directory where files will downloaded.
+This should either be a directory name or a function (called with
+no parameters) that returns a directory name."
+  :group 'lbry
+  :type '(choice directory function))
+
+;;;; Internal variables
+
+(defvar-local lbry-entries '(()))
 
 (defvar lbry-api-url "http://localhost:5279"
   "Url to a LBRY api.")
@@ -123,14 +156,15 @@
 (defvar lbry-mode-map
   (let ((map (make-sparse-keymap)))
     (suppress-keymap map)
-    (define-key map "q" #'lbry-quit)
-    (define-key map "g" #'lbry--draw-buffer)
+    (define-key map "q" #'quit-window)
+    (define-key map "g" #'lbry-draw-buffer)
     (define-key map "h" #'desribe-mode)
     (define-key map "f" #'lbry-next-page)
     (define-key map "b" #'lbry-last-page)
     (define-key map "n" #'next-line)
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
+    (define-key map "s" #'lbry-download)
     (define-key map [return] #'lbry--dwim)
     map))
 
@@ -153,20 +187,6 @@
     map)
   "Keymap for `lbry-search-mode'.")
 
-;;;; Custom
-
-(defgroup lbry nil
-  "A LBRY application."
-  :group 'comm)
-
-(defcustom lbry-order-by 'name
-  "Order to sort the results of the search query. Default is descending order
-to do an ascending order prepend ^ to the options"
-  :type 'symbol
-  :options '(name height release_time publish_time amount effective_amount
-		  support_amount trending_group trending_mixed trending_local
-		  trending_global activation_height)
-  :group 'lbry)
 ;;;; Functions
 ;;;;; Format JSON from `lbry-sdk'
 
@@ -232,20 +252,12 @@ to do an ascending order prepend ^ to the options"
 
 (defun lbry--format-title (title &optional file-type)
   "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
-  (let* ((n (length title))
-	 (extra-chars (- n lbry-title-reserved-space))
-	 (formatted-string (if (<= extra-chars 0)
-			       (concat title
-				       (make-string (abs extra-chars) ?\ )
-				       "   ")
-			     (concat (seq-subseq title 0 lbry-title-reserved-space)
-				     "..."))))
-    (pcase file-type
-      ((pred (string-match-p "binary.*")) (propertize formatted-string 'face 'lbry-binary-title))
-      ((pred (string-match-p "video.*")) (propertize formatted-string 'face 'lbry-video-title))
-      ((pred (string-match-p "audio.*")) (propertize formatted-string 'face 'lbry-audio-title))
-      ((pred (string-match-p "image.*")) (propertize formatted-string 'face 'lbry-image-title))
-      ((pred (string-match-p "document.*")) (propertize formatted-string 'face 'lbry-document-title)))))
+  (pcase file-type
+    ((pred (string-match-p "binary.*")) (propertize title 'face 'lbry-binary-title))
+    ((pred (string-match-p "video.*")) (propertize title 'face 'lbry-video-title))
+    ((pred (string-match-p "audio.*")) (propertize title 'face 'lbry-audio-title))
+    ((pred (string-match-p "image.*")) (propertize title 'face 'lbry-image-title))
+    ((pred (string-match-p "document.*")) (propertize title 'face 'lbry-document-title))))
 
 (defun lbry--format-time (timestamp)
   (let ((formatted-date (format-time-string "%Y-%m-%d" (if (stringp timestamp)
@@ -272,36 +284,32 @@ to do an ascending order prepend ^ to the options"
   "Propertize `NAME' for *LBRY* buffer"
   (propertize name 'face 'lbry-channel))
 
-(defun lbry--insert-entry (claims)
-  "Insert `CLAIMS' in the current buffer."
-  (insert
-   ;; Video type of claim has a special release_type key, use it instead of file date.
-   (if (string-match-p "video.*" (lbry-entry-media-type claims))
-       (lbry--format-time (lbry-entry-release-time claims))
-     (lbry--format-time (lbry-entry-file-date claims)))
-   " "
-   (lbry--format-title (lbry-entry-title claims) (lbry-entry-stream-type claims))
-   " "
-   (lbry--format-channel (lbry-entry-channel claims))
-   " ("
-   (lbry--format-tags (lbry-entry-media-type claims))
-   ")"))
+(defun lbry--insert-entry (claim)
+  "Insert `CLAIM' in the current buffer."
+  (list (lbry-entry-id claim)
+        (vector (if (string-match-p "video.*" (lbry-entry-media-type claim))
+                    (lbry--format-time (lbry-entry-release-time claim))
+                  (lbry--format-time (lbry-entry-file-date claim)))
+                (lbry--format-title (lbry-entry-title claim) (lbry-entry-stream-type claim))
+                (lbry--format-channel (lbry-entry-channel claim))
+                (lbry--format-tags (lbry-entry-media-type claim)))))
 
-(defun lbry--draw-buffer ()
+(defun lbry-draw-buffer ()
   (interactive)
-  (let ((inhibit-read-only t)
-	(current-line (line-number-at-pos)))
+  (let ((inhibit-read-only t))
     (erase-buffer)
-    (setf header-line-format (concat "Search results for "
-				     lbry-search-term
-				     ", page "
-				     (number-to-string lbry-current-page)))
-    (seq-do (lambda (v)
-	      (when (lbry-entry-stream-type v)
-		(lbry--insert-entry v))
-		(insert "\n"))
-	      lbry-entry)
-      (goto-char (point-min))))
+    (setq tabulated-list-format `[("Date" 10 t)
+                                  ("Title" 65 t)
+                                  ("Channel" 20 t)
+                                  ("Type" 15 t)])
+    (setq tabulated-list-entries (mapcar #'lbry--insert-entry
+                                         lbry-entry))
+    (setq tabulated-list--header-string
+          (concat "Search results for "
+        	  lbry-search-term ", page "
+        	  (number-to-string lbry-current-page)))
+    (tabulated-list-init-header)
+    (tabulated-list-print)))
 
 ;;;###autoload
 ;;;;; DWIM functions
@@ -365,12 +373,26 @@ the claim is downloaded, open it with `mpv'"
   (start-process "lbry-play-video" nil "mpv" url)
   (message "%s%s" "Playing " url))
 
-(defun lbry--dwim (&optional entry)
+(defun lbry-download (&optional entry tmp)
+  "Apply `lbry-*-function' depending on the media type of `ENTRY'"
+  (interactive)
+  (let ((entry (or entry (lbry-get-current-claim)))
+        (dir (if (stringp eww-download-directory)
+                 lbry-download-directory
+               (funcall lbry-download-directory)))
+        (file-json (lbry--API-call "get" (if temp
+					     `(("uri" . ,claim-url)
+					       ("download_directory" . "/tmp/"))
+					   `(("uri" . ,claim-url))))))
+    (message "Downloaded %s at %s"
+             (assoc-recursive file-json 'result 'file_name)
+	     (assoc-recursive file-json 'result 'download_directory))))
+
+(defun lbry-open (&optional entry)
   "Apply `lbry-*-function' depending on the media type of `ENTRY'"
   (interactive)
   (let* ((entry (or entry (lbry-get-current-claim)))
-	 (url (lbry-entry-lbry-url entry))
-	 (instance-url (replace-regexp-in-string "lbry:/" lbry-instance-url url)))
+	 (url (lbry-entry-lbry-url entry)))
     (pcase (lbry-entry-media-type entry)
       ((pred (string-match-p "application.*")) (lbry-application-function url t t))
       ((pred (string-match-p "audio.*")) (lbry-audio-function instance-url))
@@ -385,7 +407,7 @@ the claim is downloaded, open it with `mpv'"
   (interactive)
   (setf lbry-entry (lbry--query lbry-search-term (1+ lbry-current-page)))
   (setf lbry-current-page (1+ lbry-current-page))
-  (lbry--draw-buffer))
+  (lbry-draw-buffer))
 
 (defun lbry-last-page ()
   "Switch to the last page of the current search. Redraw the buffer."
@@ -393,7 +415,7 @@ the claim is downloaded, open it with `mpv'"
   (when (> lbry-current-page 1)
     (setf lbry-entry (lbry--query lbry-search-term (1- lbry-current-page)))
     (setf lbry-current-page (1- lbry-current-page))
-    (lbry--draw-buffer)))
+    (lbry-draw-buffer)))
 ;;;;; lbry-search minor mode
 
 (define-minor-mode lbry-search-mode
@@ -417,7 +439,7 @@ the claim is downloaded, open it with `mpv'"
   (setq lbry-search-term lbry-search-message)
   (setq lbry-search-message "")
   (setf lbry-entry (lbry--query lbry-search-term))
-  (lbry--draw-buffer))
+  (lbry-draw-buffer))
 
 ;;;;;; Building search message
 
@@ -468,29 +490,23 @@ the claim is downloaded, open it with `mpv'"
     (setf lbry-search-message (substring lbry-search-message 0 (1- (length lbry-search-message)))))
   (lbry-search-update))
     
-;;;;; Other
-(defun lbry-quit ()
-  (interactive)
-  (quit-window))
-  
 (defun lbry-get-current-claim ()
   (aref lbry-entry (1- (line-number-at-pos))))
 
-(define-derived-mode lbry-mode text-mode "LBRY"
+(define-derived-mode lbry-mode tabulated-list-mode "LBRY"
   (setq buffer-read-only t
 	truncate-line t)
   (buffer-disable-undo)
-  (hl-line-mode)
-  (make-local-variable 'lbry-entry))
+  (hl-line-mode))
 
+;;;###autoload
 (defun lbry ()
   (interactive)
   (switch-to-buffer (get-buffer-create "*LBRY*"))
   (unless (eq major-mode 'lbry-mode)
     (lbry-mode))
   (when (seq-empty-p lbry-search-term)
-   (funcall #'lbry-search)))
+   (call-interactively #'lbry-search)))
 
-(provide 'lbry-mode.el)
-
+(provide 'lbry-mode)
 ;;; lbry-mode.el ends here
