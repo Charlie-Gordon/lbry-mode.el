@@ -132,6 +132,23 @@ This should either be a directory name."
   :group 'lbry
   :type 'function)
 
+(defcustom lbry-file-type-icon-alist '(("audio" . "🎼")
+                                       ("binary" . "🗋")
+                                       ("document" . "🖺")
+                                       ("image" . "🖼")
+                                       ("video" . "🎥"))
+  "An alist of icons associated with their file type."
+  :group 'lbry
+  :type '(alist :key-value string :value-type (string :tag "Icon"))
+  :options '("audio" "binary" "document" "image" "video"))
+
+(defcustom lbry-extension-icon-alist '(("pdf" . "📚")
+                                 ("djvu" . "📚")
+                                 ("epub" . "📚"))
+  "An alist of icons associated with their extension."
+  :group 'lbry
+  :type '(alist :key-value string :value-type (string :tag "Icon")))
+
 ;;;; Internal variables
 
 (defvar-local lbry-entries '(()))
@@ -207,6 +224,12 @@ This should either be a directory name."
     (string-match "/.*" mime)
     (substring mime 0 (match-beginning 0))))
 
+(defun lbry-mime-extension (mime)
+  ""
+  (save-match-data
+    (string-match "/.*" mime)
+    (substring mime (1+ (match-beginning 0)))))
+
 ;;;;; Format JSON from `lbry-sdk'
 
 (defun lbry--api-call (method args)
@@ -260,7 +283,7 @@ This should either be a directory name."
 
 (defun lbry--format-title (title &optional file-type)
   "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
-  (propertize title 'face (intern (format "lbry-%s-title") file-type)))
+  (propertize title 'face (intern (format "lbry-%s-title" file-type))))
 
 (defun lbry--format-time (timestamp)
   (let ((formatted-date (format-time-string "%Y-%m-%d" (if (stringp timestamp)
@@ -277,6 +300,23 @@ This should either be a directory name."
 				  (format-seconds "%.2s" (mod seconds 60)))))
     (propertize formatted-string 'face 'lbry-date)))
 
+(defun lbry--format-file-type (media-type stream-type)
+  (concat
+   (propertize
+    (or
+     (alist-get (lbry-mime-extension media-type)
+                lbry-extension-icon-alist nil nil #'string=)
+     (alist-get stream-type
+                lbry-file-type-icon-alist "" nil #'string=))
+    'face
+    (intern (format "lbry-%s-title" stream-type)))
+   (propertize
+    stream-type
+    'face
+    (intern (format "lbry-%s-title" stream-type)))
+   "/"
+   (propertize (lbry-mime-extension media-type) 'face 'lbry-tags)))
+
 (defun lbry--format-tags (tags)
   (propertize 
   (cond ((stringp tags) tags)
@@ -290,12 +330,12 @@ This should either be a directory name."
 (defun lbry--insert-entry (claim)
   "Insert `CLAIM' in the current buffer."
   (list (lbry-entry-id claim)
-        (vector (if (string-match-p "video.*" (lbry-entry-media-type claim))
-                    (lbry--format-time (lbry-entry-release-time claim))
-                  (lbry--format-time (lbry-entry-file-date claim)))
+        (vector (lbry--format-time (if (string-match-p "video" (lbry-entry-media-type claim))
+                                       (lbry-entry-release-time claim)
+                                     (lbry-entry-file-date claim)))
                 (lbry--format-title (lbry-entry-title claim) (lbry-entry-stream-type claim))
                 (lbry--format-channel (lbry-entry-channel claim))
-                (lbry--format-tags (lbry-entry-media-type claim)))))
+                (lbry--format-file-type (lbry-entry-media-type claim) (lbry-entry-stream-type claim)))))
 
 (defun lbry-draw-buffer ()
   (interactive)
