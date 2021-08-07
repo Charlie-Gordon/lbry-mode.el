@@ -260,12 +260,7 @@ This should either be a directory name."
 
 (defun lbry--format-title (title &optional file-type)
   "Format a claim `TITLE' to be inserted according to `lbry-title-reserved-space'"
-  (pcase file-type
-    ((pred (string-match-p "binary.*")) (propertize title 'face 'lbry-binary-title))
-    ((pred (string-match-p "video.*")) (propertize title 'face 'lbry-video-title))
-    ((pred (string-match-p "audio.*")) (propertize title 'face 'lbry-audio-title))
-    ((pred (string-match-p "image.*")) (propertize title 'face 'lbry-image-title))
-    ((pred (string-match-p "document.*")) (propertize title 'face 'lbry-document-title))))
+  (propertize title 'face (intern (format "lbry-%s-title") file-type)))
 
 (defun lbry--format-time (timestamp)
   (let ((formatted-date (format-time-string "%Y-%m-%d" (if (stringp timestamp)
@@ -334,7 +329,10 @@ This should either be a directory name."
     (assoc-recursive file-json 'result 'download_path)))
 
 (defun lbry-open-default (&optional entry)
-  "Apply `lbry-*-function' depending on the media type of `ENTRY'"
+  "Invoke `lbry-open-*' function for the media type of `ENTRY' with its url as the argument.
+
+If the function doesn't exist, fallback to `lbry-download' the entry
+then call `xdg-open' to open it."
   (interactive)
   (let* ((entry (or entry (lbry-get-current-claim)))
 	 (url (lbry-entry-lbry-url entry))
@@ -344,6 +342,7 @@ This should either be a directory name."
       (start-process "lbry-open" nil "xdg-open" (lbry-download)))))
 
 (defun lbry-open (&optional entry)
+  "Use `lbry-open-function' to open this `ENTRY'."
   (interactive)
   (funcall (or lbry-open-function #'lbry-open-default-function) (lbry-get-current-claim)))
 
