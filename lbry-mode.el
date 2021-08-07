@@ -121,12 +121,16 @@ to do an ascending order prepend ^ to the options"
                     (symbol :tag "Activation_Height" activation_height))
   :group 'lbry)
 
-(defcustom lbry-download-directory 'erc--download-directory
+(defcustom lbry-download-directory "~/Downloads/"
   "Directory where files will downloaded.
-This should either be a directory name or a function (called with
-no parameters) that returns a directory name."
+This should either be a directory name."
   :group 'lbry
-  :type '(choice directory function))
+  :type 'directory)
+
+(defcustom lbry-open-function #'lbry-open-default
+  "Function to call with `lbry-open'"
+  :group 'lbry
+  :type 'function)
 
 ;;;; Internal variables
 
@@ -165,6 +169,7 @@ no parameters) that returns a directory name."
     (define-key map "p" #'previous-line)
     (define-key map "s" #'lbry-search)
     (define-key map "d" #'lbry-download)
+    (define-key map "o" #'lbry-open)
     (define-key map [return] #'lbry-open)
     map))
 
@@ -188,66 +193,69 @@ no parameters) that returns a directory name."
   "Keymap for `lbry-search-mode'.")
 
 ;;;; Functions
-;;;;; Format JSON from `lbry-sdk'
-
-(defun lbry--API-call (method args)
-  (with-temp-buffer
-    (let ((exit-code (call-process "curl" nil (list (current-buffer) "/tmp/lbry-el-curl-error") nil
-				   "--show-error"
-				   "--silent"
-				   "--data"
-				   (json-encode `(("method" . ,method)
-						  ("params" . ,args)))
-				   lbry-api-url)))
-      ;; Put error code from cURL in "/tmp/lbry-el-curl-error" file
-      (unless (= exit-code 0)
-	(with-temp-buffer
-	  ;; Insert the error code in temporary buffer
-	  (insert-file "/tmp/lbry-el-curl-error")
-	  ;; Show the content of the buffer as an error
-	  ;; We go out of our to do this because cURL error code is very useful
-	  ;; e.g. wrong url or no protocol etc.
-	  (user-error "%s" (buffer-string))))
-      (goto-char (point-min))
-      (ignore-errors (json-read)))))
-
 ;; Many thanks to @Malabarba for this fantastic solution
 ;; https://emacs.stackexchange.com/questions/3197/best-way-to-retrieve-values-in-nested-assoc-lists
 (defun assoc-recursive (alist &rest keys)
   "Recursively find KEYs in ALIST."
   (while keys
-    (setq alist (cdr (assoc (pop keys) alist))))
+            (setq alist (cdr (assoc (pop keys) alist))))
   alist)
+
+(defun lbry-mime-sans-extension (mime)
+  ""
+  (save-match-data
+    (string-match "/.*" mime)
+    (substring mime 0 (match-beginning 0))))
+
+;;;;; Format JSON from `lbry-sdk'
+
+(defun lbry--api-call (method args)
+  (with-temp-buffer
+    (let* ((output-buf (get-buffer-create " *lbry-curl-output*"))
+           (exit-code (call-process "curl" nil output-buf nil
+				    "--show-error"
+				    "--silent"
+				    "--data"
+				    (json-encode `(("method" . ,method)
+						   ("params" . ,args)))
+				    lbry-api-url))
+           claims)
+      (with-current-buffer output-buf
+        (if (not (= exit-code 0))
+            (error "%s" (string-trim (buffer-string)))
+          (goto-char (point-min))
+          (setq claims (json-read))
+          (if (assoc-recursive claims 'error)
+	      (error "%s" (assoc-recursive claims 'error 'message))
+            (erase-buffer)
+            claims))))))
 
 (defun lbry--query (string &optional page)
   "Query the LBRY blockchain via `lbry-sdk' for STRING, return Nth page of resutls."
-  (let ((claims (lbry--API-call "claim_search" `(("text" . ,string)
+  (let ((claims (lbry--api-call "claim_search" `(("text" . ,string)
 						 ("page" . ,(or page
-							       lbry-current-page))
+							        lbry-current-page))
+                                                 ("page_size" . ,(- (frame-height) 3))
 						 ("claim_type" . "stream")
 						 ("fee_amount" . 0)))))
-    ;; Above is for debugging
-    ;; Error handling
-    (if (assoc-recursive claims 'error)
-	(error "%s" (assoc-recursive claims 'error 'message))
-      ;; Assigning value to `lbry-entry' struct
-      (progn (dotimes (i (assoc-recursive claims 'result 'page_size))
-	       (let ((stream (aref (assoc-recursive claims 'result 'items) i)))
-		 (aset (assoc-recursive claims 'result 'items) i
-		       (lbry-entry-create :id (assoc-recursive stream 'claim_id)
-					  :lbry-url (assoc-recursive stream 'permanent_url)
-					  :release-time (assoc-recursive stream 'value 'release_time)
-					  :file-date (assoc-recursive stream 'timestamp)
-					  :title (or (assoc-recursive stream 'value 'title)
-						     "No title available.")
-					  :stream-type (assoc-recursive stream 'value 'stream_type)
-					  :media-type (assoc-recursive stream 'value 'source 'media_type)
-					  ;; Sometimes claims was published from an anonymous source
-					  :channel (or (assoc-recursive stream 'signing_channel 'name)
-						       "Anonymous")
-					  :tags (assoc-recursive stream 'value 'tags)
-					  :desc (assoc-recursive stream 'value 'description)))))
-	     (assoc-recursive claims 'result 'items)))))
+    ;; Assigning value to `lbry-entry' struct
+    (dotimes (i (assoc-recursive claims 'result 'page_size))
+      (let ((stream (aref (assoc-recursive claims 'result 'items) i)))
+	(aset (assoc-recursive claims 'result 'items) i
+	      (lbry-entry-create :id (assoc-recursive stream 'claim_id)
+				 :lbry-url (assoc-recursive stream 'permanent_url)
+				 :release-time (assoc-recursive stream 'value 'release_time)
+				 :file-date (assoc-recursive stream 'timestamp)
+				 :title (or (assoc-recursive stream 'value 'title)
+					    "No title available.")
+				 :stream-type (assoc-recursive stream 'value 'stream_type)
+				 :media-type (assoc-recursive stream 'value 'source 'media_type)
+				 ;; Sometimes claims was published from an anonymous source
+				 :channel (or (assoc-recursive stream 'signing_channel 'name)
+					      "Anonymous")
+				 :tags (assoc-recursive stream 'value 'tags)
+				 :desc (assoc-recursive stream 'value 'description)))))
+    (assoc-recursive claims 'result 'items)))
 ;;;;; Inserting *LBRY* Buffer
 
 (defun lbry--format-title (title &optional file-type)
@@ -312,95 +320,32 @@ no parameters) that returns a directory name."
     (tabulated-list-print)))
 
 ;;;###autoload
-;;;;; DWIM functions
-(defun lbry-application-function (claim-url temp &optional open)
-  "Function to invoke when `lbry-entry-media-type' equal \"application\"
-The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
-the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open' when `OPEN' is non-nil."
-  ;;  Call LBRY with `get' method to download file
-  (let ((file-json (lbry--API-call "get" (if temp
-					      `(("uri" . ,claim-url)
-						 ("download_directory" . "/tmp/"))
-						`(("uri" . ,claim-url))))))
-    (message "%s%s%s%s" "Downloaded "
-	     (assoc-recursive file-json 'result 'file_name) " at "
-	     (assoc-recursive file-json 'result 'download_directory))
-    (when open
-      ;;      (start-process "lbry-application-open" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
-      ;; I use Emacs to open pdf files with `pdf-tools' package.
-      (find-file (assoc-recursive file-json 'result 'download_path))
-      (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
-      
-(defun lbry-audio-function (&optional url)
-  "Function to invoke when `lbry-entry-media-type' equal \"audio\"
-The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
-the claim is downloaded, open it with `mpv --no-video' when `OPEN' is non-nil."
-  (start-process "lbry-play-audio" nil "mpv"
-		 "--no-video" url)
-  (message "Starting audio..."))
-
-(defun lbry-image-function (claim-url temp &optional open)
-  "Function to invoke when `lbry-entry-media-type' equal \"image\"
-The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
-the claim is downloaded(to /tmp/ when `TEMP' is non-nil), open it with `xdg-open' when `OPEN' is non-nil."
-  (let* ((file-json (lbry--API-call "get" (if temp
-					      `(("uri" . ,claim-url)
-						("download_directory" . "/tmp/"))
-					    `(("uri" . ,claim-url))))))
-    (message "%s" (concat "Downloaded "
-			  (assoc-recursive file-json 'result 'file_name) " at "
-			  (assoc-recursive file-json 'result 'download_directory)))
-    (when open
-      ;; (start-process "lbry-view-image" nil "xdg-open" (assoc-recursive file-json 'result 'download_path))
-      ;; I use Emacs
-      (find-file (assoc-recursive file-json 'result 'download_path))
-      (message "%s" (concat "Opening " (assoc-recursive file-json 'result 'file_name))))))
-
-(defun lbry-text-function (claim-url temp)
-    "Function to invoke when `lbry-entry-media-type' equal \"text\"
-The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
-the claim is downloaded(to /tmp/ when `TEMP' is non-nil), call `find-file' to claim"
-  (let ((file-json (lbry--API-call "get" (if temp
-					      `(("uri" . ,claim-url)
-						("download_directory" . "/tmp/"))
-					    `(("uri" . ,claim-url))))))
-    (find-file (assoc-recursive file-json 'result 'download_path))))
-
-(defun lbry-video-function (url)
-  "Function to invoke when `lbry-entry-media-type' equal \"video\"
-The default: Call the LBRY api with \"get\" method on `CLAIM-URL', after 
-the claim is downloaded, open it with `mpv'"
-  (start-process "lbry-play-video" nil "mpv" url)
-  (message "%s%s" "Playing " url))
-
 (defun lbry-download (&optional entry tmp)
   "Apply `lbry-*-function' depending on the media type of `ENTRY'"
   (interactive)
   (let* ((entry (or entry (lbry-get-current-claim)))
          (claim-url (lbry-entry-lbry-url entry))
-         (dir (if (stringp lbry-download-directory)
-                  lbry-download-directory
-                (funcall lbry-download-directory)))
-         (file-json (lbry--API-call "get" (list (cons "uri" claim-url)
+         (file-json (lbry--api-call "get" (list (cons "uri" claim-url)
 				                (cons "download_directory"
                                                       (if tmp
                                                           temporary-file-directory
-                                                        dir))))))
-    (message "Downloaded %s at %s"
-             (assoc-recursive file-json 'result 'file_name)
-	     (assoc-recursive file-json 'result 'download_directory))))
+                                                        (expand-file-name
+                                                         lbry-download-directory)))))))
+    (assoc-recursive file-json 'result 'download_path)))
 
-(defun lbry-open (&optional entry)
+(defun lbry-open-default (&optional entry)
   "Apply `lbry-*-function' depending on the media type of `ENTRY'"
   (interactive)
   (let* ((entry (or entry (lbry-get-current-claim)))
-	 (url (lbry-entry-lbry-url entry)))
-    (pcase (lbry-entry-media-type entry)
-      ((pred (string-match-p "application.*")) (lbry-application-function url t t))
-      ((pred (string-match-p "audio.*")) (lbry-audio-function instance-url))
-      ((pred (string-match-p "image.*")) (lbry-image-function url t t))
-      ((pred (string-match-p "text.*")) (lbry-text-function url t))
-      ((pred (string-match-p "video.*")) (lbry-video-function instance-url)))))
+	 (url (lbry-entry-lbry-url entry))
+         (type-fn (intern (concat "lbry-open-" (lbry-mime-sans-extension (lbry-entry-media-type entry))))))
+    (if (fboundp type-fn)
+        (funcall type-fn url)
+      (start-process "lbry-open" nil "xdg-open" (lbry-download)))))
+
+(defun lbry-open (&optional entry)
+  (interactive)
+  (funcall (or lbry-open-function #'lbry-open-default-function) (lbry-get-current-claim)))
 
 ;;;;; *LBRY* buffer
 ;;;;;; Navigation functions
